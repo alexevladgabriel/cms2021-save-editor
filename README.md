@@ -14,7 +14,7 @@ A save-file editor for **Car Mechanic Simulator 2021** that runs entirely in you
 
 The easiest way — just open the link, drag in your save, make edits, and download.
 
-> _(Add your GitHub Pages URL here once deployed)_
+> [Online save editor](https://rdeeb.github.io/cms2021-save-editor/)
 
 Your save file never leaves your computer. Everything is processed locally in the browser.
 
@@ -45,8 +45,27 @@ Your save file never leaves your computer. Everything is processed locally in th
 
 | Platform | Path |
 |---|---|
-| Windows | `%USERPROFILE%\AppData\LocalLow\Red Dot Games\Car Mechanic Simulator 2021\Saves\` |
+| Windows (Steam/Epic) | `%USERPROFILE%\AppData\LocalLow\Red Dot Games\Car Mechanic Simulator 2021\Saves\` |
+| Windows (Xbox Game Pass) | `%LOCALAPPDATA%\Packages\RedDotGames.CarMechanicSimulator2021_h6vh6...\SystemAppData\wgs\` |
 | Linux (Steam) | `~/.steam/steam/userdata/<id>/1190000/remote/` |
+
+---
+
+### Xbox Game Pass (PC) Specifics
+
+The Game Pass version uses the **Windows Game Save (WGS)** system, which is different from the standard Steam version:
+
+1. **Hash Filenames**: Files in the `wgs` folder have no extensions and use long hexadecimal names (e.g., `551DBD...`).
+2. **Identification**: To find your save, look for the largest file (typically 8KB–30KB) in the most recently modified subfolder.
+3. **Cloud Sync Override**: Xbox will often overwrite your modified file with the cloud version. To prevent this:
+    - **Disconnect from the Internet**.
+    - Replace the original hash file with your edited one (**Keep the original hash name!**).
+    - Start the game while offline.
+    - Once at the main menu, Reconnect to the Internet.
+    - Make a small ingame change (e.g., move a car) to trigger a sync.
+    - If prompted, choose **"Use Local Save"**.
+
+---
 
 Profiles are named `profile0.cms21b`, `profile1.cms21b`, etc.
 

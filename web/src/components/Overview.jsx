@@ -70,6 +70,13 @@ export default function Overview({ stats, origStats, header, onStatsChange }) {
           onChange={(v) => update('xp', v)}
           min={0}
         />
+        <StatCard
+          label="Skill Points"
+          value={stats.skill_points}
+          origValue={origStats.skill_points}
+          onChange={(v) => update('skill_points', v)}
+          min={0}
+        />
       </div>
 
       <div className="profile-card">

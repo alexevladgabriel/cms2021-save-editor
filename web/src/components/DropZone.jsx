@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from 'react'
 
-export default function DropZone({ onFile, loading, error }) {
+export default function DropZone({ onFile, loading, progress, progressLabel, error }) {
   const [dragOver, setDragOver] = useState(false)
   const inputRef = useRef(null)
 
@@ -48,8 +48,15 @@ export default function DropZone({ onFile, loading, error }) {
 
         {loading ? (
           <div className="dropzone-loading">
-            <div className="spinner" style={{ margin: '0 auto 8px' }} />
-            Decoding save file…
+            <div className="dropzone-progress-bar">
+              <div
+                className="dropzone-progress-fill"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+            <span className="dropzone-progress-label">
+              {progressLabel || 'Loading…'}
+            </span>
           </div>
         ) : (
           <label className="dropzone-browse">

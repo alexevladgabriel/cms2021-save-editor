@@ -203,18 +203,40 @@ function _encodeBlock(entry) {
 
 // ── Parts section ─────────────────────────────────────────────────────────────
 
-function _parsePartsSection(data, start) {
+function _parsePartsSection(data, start, onProgress, pStart = 10, pEnd = 65) {
   let pos = start
+  if (pos >= data.length) return [null, pos]
+
   const [sectionName, p1] = _readStr8(data, pos)
   pos = p1
 
-  const view  = new DataView(data.buffer, data.byteOffset)
-  const count = view.getUint32(pos, true)
+  const view  = new DataView(data.buffer, data.byteOffset + pos)
+  if (pos + 4 > data.length) return [null, pos]
+  const count = view.getUint32(0, true)
   pos += 4
 
+  // Heuristic: if count is absurdly large (e.g. > 10,000 for a 20KB file), 
+  // it might be a misread header.
+  if (count > 0xFFFF || (count * 40 > data.length)) {
+     // This is likely not the start of a parts section.
+     return [null, start]
+  }
+
   const parts = []
+  let lastReportedPct = -1
   for (let i = 0; i < count; i++) {
+    if (onProgress && count > 0) {
+      const pct = Math.round(pStart + (pEnd - pStart) * (i + 1) / count)
+      if (pct !== lastReportedPct) {
+        onProgress(pct, `Parsing parts… (${i + 1} / ${count})`)
+        lastReportedPct = pct
+      }
+    }
+    
+    if (pos >= data.length) break
+
     const nameLen = data[pos]
+    if (pos + 1 + nameLen > data.length) break
     const name    = _utf8dec.decode(data.slice(pos + 1, pos + 1 + nameLen))
     pos += 1 + nameLen
 
@@ -251,6 +273,7 @@ function _parsePartsSection(data, start) {
       }
     }
 
+    if (dataStart + blockSize > data.length) blockSize = data.length - dataStart
     parts.push(_decodeBlock(name, data.slice(dataStart, dataStart + blockSize)))
     pos = dataStart + blockSize
   }
@@ -338,10 +361,21 @@ function _tailStatsOffset(tail) {
 }
 
 function _tailGarageStateOffset(tail) {
-  const goff = _bytesIndexOf(tail, _GARAGE_NEEDLE)
-  if (goff === -1) throw new Error('Garage section not found in save')
+  // Rather than a fixed needle, find "paintshop" and then back up to see the count.
+  const pidx = _bytesIndexOf(tail, _utf8enc.encode('paintshop'))
+  if (pidx === -1) throw new Error('Garage section not found (no paintshop)')
+  
+  // The byte before is the length (9). Before that is the count (uint32).
+  const goff = pidx - 1 - 4
+  const view = new DataView(tail.buffer, tail.byteOffset)
+  const count = view.getUint32(goff, true)
+  
   let pos = goff + 4  // skip count uint32
-  for (const name of _GARAGE_NAMES) pos += 1 + name.length
+  // Skip over all names (length-prefixed)
+  for (let i = 0; i < count; i++) {
+    const n = tail[pos]
+    pos += 1 + n
+  }
   pos += 4  // skip second count uint32
   return pos
 }
@@ -417,23 +451,75 @@ function _encodeTailSkills(tail, skills) {
  * Decode a .cms21b ArrayBuffer into a save object.
  * Pass the object (unmodified) to applyEdits or encode.
  */
-export function decode(arrayBuffer) {
+export function decode(arrayBuffer, onProgress) {
+  const report = (pct, label) => onProgress?.(pct, label)
+
+  report(5, 'Reading header…')
   const data = new Uint8Array(arrayBuffer)
-  const [header, sectionStart] = _parseHeader(data)
+  const [header, _hStart] = _parseHeader(data)
 
-  const partsSections = []
-  let pos = sectionStart
-  if (pos < data.length) {
-    const [section, nextPos] = _parsePartsSection(data, pos)
-    partsSections.push(section)
-    pos = nextPos
+  /** Validate that a potential section header at `pos` is real.
+   *  Returns { sectionName, count, partsStart } or null. */
+  function _trySectionAt(pos) {
+    if (pos + 5 >= data.length) return null
+    const namelen = data[pos]
+    if (namelen < 3 || namelen > 20) return null
+    const nameEnd = pos + 1 + namelen
+    if (nameEnd + 4 > data.length) return null
+    // All name bytes must be printable ASCII
+    for (let i = pos + 1; i < nameEnd; i++) {
+      if (data[i] < 32 || data[i] >= 127) return null
+    }
+    const sectionName = _utf8dec.decode(data.slice(pos + 1, nameEnd))
+    const view = new DataView(data.buffer, data.byteOffset)
+    const count = view.getUint32(nameEnd, true)
+    // Sanity: count can be 0 (empty inventory) but not absurdly large
+    if (count > 5000) return null
+    return { sectionName, count, partsStart: nameEnd + 4 }
   }
 
-  return {
-    header,
-    parts_sections: partsSections,
-    _tail_raw: _bytesToHex(data.slice(pos)),
+  // Compute rawStart independently — right after the profile name bytes,
+  // before any 0xFF padding. This is where _parseHeader's own scan began.
+  // We need to start here so we can encounter (and validate) every 0xFF block,
+  // including the very first one that immediately precedes the parts section.
+  const rawStart = 12 + data[11]   // 8(magic)+2(year)+1(month)+1(namelen) + namelen
+
+  // Scan forward through all 0xFF padding blocks starting from rawStart.
+  // The first block that leads to a valid section header is the parts section.
+  let partsSections = []
+  let pos = _hStart
+  let scanPos = rawStart
+  while (scanPos < data.length - 5) {
+    if (data[scanPos] === 0xff) {
+      // Skip the entire 0xFF run
+      while (scanPos < data.length && data[scanPos] === 0xff) scanPos++
+      const candidate = _trySectionAt(scanPos)
+      if (candidate !== null) {
+        // Found a valid section header — parse it
+        report(10, 'Parsing parts…')
+        const [section, nextPos] = _parsePartsSection(data, scanPos, report, 10, 65)
+        if (section) {
+          partsSections.push(section)
+          pos = nextPos
+        }
+        break  // Only one inventory section per save
+      }
+      // Not a valid section — keep scanning (could be an embedded 0xFF byte in car data)
+    } else {
+      scanPos++
+    }
   }
+
+  // Fallback: nothing found, pos stays at _hStart (tail starts right after header)
+  if (partsSections.length === 0) {
+    pos = _hStart
+  }
+
+  report(70, 'Reading player stats…')
+  const tailRaw = _bytesToHex(data.slice(pos))
+
+  report(100, 'Done')
+  return { header, parts_sections: partsSections, _tail_raw: tailRaw }
 }
 
 /**
@@ -495,6 +581,72 @@ export function flattenParts(save) {
 }
 
 /**
+ * Scan binary buffers for car sections and group them.
+ * CM21 saves are sequential: car record followed by its components.
+ */
+export function parseCars(save) {
+  const tail = _hexToBytes(save._tail_raw)
+  
+  const cars = []
+  let currentCar = null
+  
+  const PART_PREFIXES = [
+    'car_', 'window', 'mirror', 'door', 'trunk', 'hood', 'taillight', 'bumper', 'fender',
+    'rim_', 'tire_', 'wheel_', 'suspension', 'piasta', 'tuleja', 'amortyzator',
+    'tarcza', 'zacisk', 'klocki', 'wahacz', 'drazek', 'stabilizator', 'Engine'
+  ]
+
+  // Scan for 1-byte len + name strings
+  for (let pos = 0; pos < tail.length - 60; pos++) {
+     const len = tail[pos]
+     if (len >= 3 && len <= 50) {
+        const cand = tail.slice(pos + 1, pos + 1 + len)
+        let isString = true
+        for (let i = 0; i < cand.length; i++) {
+           if (cand[i] < 32 || cand[i] >= 127) { isString = false; break; }
+        }
+        if (isString) {
+           const name = _utf8dec.decode(cand)
+           const lower = name.toLowerCase()
+           const isPart = PART_PREFIXES.some(p => lower.startsWith(p.toLowerCase()))
+           
+           if (isPart || name.includes('/') || name.includes('(')) {
+              const isMainCar = lower.startsWith('car_') && !name.includes('-') && !lower.includes('_wash') && name.split('_').length <= 2
+              const isWash = lower === 'car_wash'
+
+              if (isMainCar || isWash) {
+                 currentCar = { name, parts: [], rawName: name }
+                 cars.push(currentCar)
+              } else if (currentCar) {
+                 // Try to decode the block following the name
+                 const dataStart = pos + 1 + len
+                 const blockSize = _guessBlockSize(name)
+                 if (dataStart + blockSize <= tail.length) {
+                    const block = tail.slice(dataStart, dataStart + blockSize)
+                    const decoded = _decodeBlock(name, block)
+                    if (decoded.condition !== undefined && decoded.condition >= 0 && decoded.condition <= 1.0) {
+                       currentCar.parts.push({
+                          ...decoded,
+                          offset: dataStart
+                       })
+                    }
+                 }
+              }
+              pos += len // skip name bytes to avoid re-reading
+           }
+        }
+     }
+  }
+  
+  // Collapse duplicates and clean up
+  return cars.map(c => ({
+     name: c.name.replace(/^car_/, '').replace(/_/g, ' '),
+     parts: c.parts,
+     rawName: c.rawName
+  }))
+}
+
+/**
  * Apply a set of edits to a save object and return the binary result.
  *
  * @param {object} save        - The save object from decode()
@@ -505,11 +657,15 @@ export function flattenParts(save) {
  * @param {Array}  [edits.skillEdits]   - [{ name, purchased, tiers }]
  * @returns {Uint8Array}
  */
-export function applyEdits(save, { stats, partEdits = [], garageEdits = [], skillEdits = [] } = {}) {
+export function applyEdits(save, { stats, partEdits = [], garageEdits = [], skillEdits = [], carPartEdits = [] } = {}, onProgress) {
+  const report = (pct, label) => onProgress?.(pct, label)
+
+  report(10, 'Preparing…')
   save = JSON.parse(JSON.stringify(save))  // deep clone — never mutate the original
 
   // ── Player stats ────────────────────────────────────────────────────────────
   if (stats) {
+    report(30, 'Applying stats…')
     const tail = _hexToBytes(save._tail_raw)
     const view = new DataView(tail.buffer)
     const off  = _tailStatsOffset(tail)
@@ -523,12 +679,14 @@ export function applyEdits(save, { stats, partEdits = [], garageEdits = [], skil
   }
 
   // ── Part conditions ─────────────────────────────────────────────────────────
+  report(50, 'Applying part edits…')
   for (const edit of partEdits) {
     save.parts_sections[edit.sec_idx].parts[edit.part_idx].condition =
       Math.max(0, Math.min(1, edit.condition))
   }
 
   // ── Garage state ────────────────────────────────────────────────────────────
+  report(70, 'Applying garage edits…')
   if (garageEdits.length > 0) {
     const tail = _hexToBytes(save._tail_raw)
     const base = _tailGarageStateOffset(tail)
@@ -539,11 +697,27 @@ export function applyEdits(save, { stats, partEdits = [], garageEdits = [], skil
   }
 
   // ── Skills ──────────────────────────────────────────────────────────────────
+  report(85, 'Applying skill edits…')
   if (skillEdits.length > 0) {
     const tail    = _hexToBytes(save._tail_raw)
     const patched = _encodeTailSkills(tail, skillEdits)
     save._tail_raw = _bytesToHex(patched)
   }
 
-  return encode(save)
+  // ── Car Parts ───────────────────────────────────────────────────────────────
+  if (carPartEdits.length > 0) {
+    report(90, 'Applying car part edits…')
+    const tail = _hexToBytes(save._tail_raw)
+    const view = new DataView(tail.buffer)
+    for (const edit of carPartEdits) {
+       // Only patch condition at offset 9
+       view.setFloat32(edit.offset + 9, Math.max(0, Math.min(1.0, edit.condition)), true)
+    }
+    save._tail_raw = _bytesToHex(tail)
+  }
+
+  report(95, 'Encoding…')
+  const result = encode(save)
+  report(100, 'Done')
+  return result
 }

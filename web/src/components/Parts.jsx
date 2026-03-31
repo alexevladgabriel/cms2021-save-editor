@@ -74,7 +74,19 @@ export default function Parts({ parts, onPartsChange }) {
         </span>
       </div>
 
-      {visibleParts.length === 0 ? (
+      {parts.length === 0 ? (
+        <div className="parts-empty" style={{ padding: '40px 24px' }}>
+          <div style={{ fontSize: '32px', marginBottom: '12px' }}>📦</div>
+          <div style={{ fontWeight: 600, color: 'var(--text)', marginBottom: '8px' }}>
+            No garage inventory parts
+          </div>
+          <div style={{ maxWidth: '400px', margin: '0 auto', lineHeight: '1.7' }}>
+            This save file has no loose parts stored in the garage.
+            Parts installed on cars are stored separately in the save and are not yet editable here.
+            Try loading a save with items in the garage inventory.
+          </div>
+        </div>
+      ) : visibleParts.length === 0 ? (
         <div className="parts-empty">
           No parts match the current filter
           {search ? ` and search "${search}"` : ''}.

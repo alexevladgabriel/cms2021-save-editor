@@ -1,5 +1,31 @@
 import { useState, useCallback } from 'react'
 
+const TIERS = {
+  paintshop:            3,
+  garage_upgrade:       3,
+  lifter:               3,
+  repair_parts:         3,
+  repair_body:          3,
+  scraps:               1,
+  dyno:                 1,
+  warehouse:            1,
+  path_test:            1,
+  car_wash:             1,
+  unlock_tablet:        1,
+  unlock_obd:           1,
+  unlock_fuel:          1,
+  unlock_electronic:    1,
+  garage_customization: 1,
+  unlock_cylinder:      1,
+  unlock_tires:         1,
+  brake_lathe:          1,
+  welder:               1,
+  battery:              1,
+  crane:                1,
+  bus_upgrade:          1,
+  windowtint:           1,
+}
+
 const DISPLAY = {
   paintshop:            'Paint Shop',
   scraps:               'Scrap Parts Bin',
@@ -52,102 +78,104 @@ const ICONS = {
   windowtint:           '🪟',
 }
 
-function getStateBadge(state) {
-  if (state === 0) return { label: 'Locked', cls: 'locked' }
-  if (state === 1) return { label: 'Unlocked', cls: 'unlocked' }
-  return { label: `Tier ${state}`, cls: 'tier' }
-}
+function UpgradeCard({ item, onStateChange }) {
+  const { name, state, _orig } = item
+  const maxTier = TIERS[name] || 1
+  
+  const changed = state !== _orig
+  const purchased = state > 0
 
-const FILTERS = ['All', 'Unlocked', 'Locked']
+  const togglePurchased = () => {
+    onStateChange(purchased ? 0 : 1)
+  }
 
-export default function Garage({ garage, onGarageChange }) {
-  const [filter, setFilter] = useState('All')
-
-  const unlocked = garage.filter(g => g.state > 0).length
-
-  const handleStateChange = useCallback((idx, raw) => {
-    const val = parseInt(raw, 10)
-    if (isNaN(val) || val < 0 || val > 255) return
-    onGarageChange(prev => prev.map((g, i) => i === idx ? { ...g, state: val } : g))
-  }, [onGarageChange])
-
-  const handleUnlockAll = useCallback(() => {
-    onGarageChange(prev => prev.map(g => g.state === 0 ? { ...g, state: 1 } : g))
-  }, [onGarageChange])
-
-  const filtered = garage.filter(g => {
-    if (filter === 'Unlocked') return g.state > 0
-    if (filter === 'Locked')   return g.state === 0
-    return true
-  })
+  const setTier = (t) => {
+    onStateChange(t)
+  }
 
   return (
-    <div>
-      <div className="garage-toolbar">
-        <div className="garage-filters">
-          {FILTERS.map(f => (
-            <button
-              key={f}
-              className={`filter-btn${filter === f ? ' active' : ''}`}
-              onClick={() => setFilter(f)}
-            >
-              {f}
-            </button>
-          ))}
+    <div className={`skill-card${changed ? ' changed' : ''}${purchased ? ' purchased' : ''}`}>
+      <div className="skill-header">
+        <span className="skill-icon">{ICONS[name] || '🔧'}</span>
+        <div className="skill-names">
+          <div className="skill-name">{DISPLAY[name] || name}</div>
+          <div className="skill-id">{name}</div>
         </div>
-        <span className="badge">{unlocked} / {garage.length} unlocked</span>
-        <button className="btn btn-sm btn-success" onClick={handleUnlockAll}>
-          Unlock All
+        <label className="skill-toggle">
+          <input type="checkbox" checked={purchased} onChange={togglePurchased} />
+          <span className="skill-toggle-slider"></span>
+        </label>
+      </div>
+
+      {maxTier > 1 ? (
+        <div className="skill-tiers">
+          {Array.from({ length: maxTier }).map((_, i) => {
+            const tierVal = i + 1
+            const isActive = state >= tierVal
+            const isChanged = (_orig < tierVal && state >= tierVal) || (_orig >= tierVal && state < tierVal)
+            
+            return (
+              <button
+                key={i}
+                className={`skill-tier-btn${isActive ? ' active' : ''}${isChanged ? ' changed' : ''}`}
+                onClick={() => setTier(tierVal)}
+                disabled={!purchased}
+                title={`Level ${tierVal}`}
+              >
+                {tierVal}
+              </button>
+            )
+          })}
+        </div>
+      ) : (
+        <div className="skill-tiers" style={{ justifyContent: 'center' }}>
+           <span style={{ fontSize: '12px', opacity: purchased ? 1 : 0.4 }}>
+             {purchased ? 'FULLY UNLOCKED' : 'LOCKED'}
+           </span>
+        </div>
+      )}
+      
+      {changed && (
+        <div className="skill-was">Modified (was {_orig})</div>
+      )}
+    </div>
+  )
+}
+
+export default function Garage({ garage, onGarageChange }) {
+  const handleStateChange = useCallback((idx, newState) => {
+    onGarageChange(prev => prev.map((g, i) => i === idx ? { ...g, state: newState } : g))
+  }, [onGarageChange])
+
+  const handleMaxAll = useCallback(() => {
+    onGarageChange(prev => prev.map(g => ({
+      ...g,
+      state: TIERS[g.name] || 1
+    })))
+  }, [onGarageChange])
+
+  const unlockedCount = garage.filter(g => g.state > 0).length
+
+  return (
+    <div className="skills-container">
+      <div className="skills-toolbar">
+        <div className="skills-summary">
+          <span className="badge">{unlockedCount} / {garage.length} upgrades unlocked</span>
+        </div>
+        <button className="btn btn-sm btn-success" onClick={handleMaxAll}>
+          Max All Upgrades
         </button>
       </div>
 
-      <div className="garage-note">
-        State value: <strong>0</strong> = locked, <strong>1</strong> = purchased / unlocked,
-        higher values may indicate upgrade tiers (reverse-engineered, experimental).
+      <div className="skills-grid">
+        {garage.map((g, i) => (
+          <UpgradeCard
+            key={g.name}
+            item={g}
+            onStateChange={(val) => handleStateChange(i, val)}
+          />
+        ))}
       </div>
-
-      <div className="garage-grid">
-        {filtered.map((g, displayIdx) => {
-          const realIdx = garage.findIndex(x => x.name === g.name)
-          const badge   = getStateBadge(g.state)
-          const changed = g.state !== g._orig
-
-          return (
-            <div key={g.name} className={`garage-card${changed ? ' changed' : ''}`}>
-              <div className="garage-card-header">
-                <span className="garage-card-icon">{ICONS[g.name] || '🔧'}</span>
-                <div className="garage-card-names">
-                  <div className="garage-card-name">{DISPLAY[g.name] || g.name}</div>
-                  <div className="garage-card-id">{g.name}</div>
-                </div>
-              </div>
-
-              <span className={`state-badge ${badge.cls}`}>{badge.label}</span>
-
-              <div className="garage-state-row">
-                <span className="garage-state-label">State:</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={255}
-                  className={`garage-state-input${changed ? ' changed' : ''}`}
-                  value={g.state}
-                  onChange={(e) => handleStateChange(realIdx, e.target.value)}
-                />
-                {changed && (
-                  <span style={{ fontSize: '11px', color: 'var(--yellow)' }}>
-                    was {g._orig}
-                  </span>
-                )}
-              </div>
-            </div>
-          )
-        })}
-      </div>
-
-      {filtered.length === 0 && (
-        <div className="parts-empty">No items match the current filter.</div>
-      )}
     </div>
   )
 }
